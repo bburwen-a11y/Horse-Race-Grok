@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Horse Race Review v1.85 — Race Card Reader</title>
+<title>Horse Race Review v1.87 — Race Card Reader</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   :root{
@@ -1078,7 +1078,7 @@
 <body>
 <div class="wrap">
   <header>
-    <p class="eyebrow">Handicapping utility · <span class="ver">v1.85</span> · released 9 October 2026</p>
+    <p class="eyebrow">Handicapping utility · <span class="ver">v1.87</span> · released 9 October 2026</p>
     <h1><span class="flap">H</span><span class="flap">o</span><span class="flap">r</span><span class="flap">s</span><span class="flap">e</span> <span class="flap">R</span><span class="flap">a</span><span class="flap">c</span><span class="flap">e</span> <span class="flap">R</span><span class="flap">e</span><span class="flap">v</span><span class="flap">i</span><span class="flap">e</span><span class="flap">w</span></h1>
     <p class="tagline">Upload a data file or program PDF. Horse Race Review lays out the whole card: past performances with pace, scratches, surface changes, and a decision board ranked BEST → USE → LEAN → ALSO → VALUE → PASS. Measured pool (52 cards / 190 Picks): core≥3 hits 61% at +31% ROI. BEST requires that concurrence; surface changes block BEST; exacta flagged when two model names sit live.</p>
   </header>
@@ -3618,39 +3618,24 @@ function pickFor(rs){
   //
   // Both inputs come off the data file, so a Pick is final the night before and
   // never waits on the board.
+  // v1.87 — Overlay Board v3.00 / Claude alignment:
+  // Pick = ONE condition: sole ML favourite holds sole top last-3 Avg-3.
+  // Trip, H2H, confidence concerns are labels on the card — they do NOT
+  // unmake the figure favourite. Flags that demote a figure fav to PASS
+  // (claim drop, surface switch) are handled in verdictOf, not here.
   const ability = topAvg3Sole(rs, fav);
-  const trip = topComparableAvg3Sole(rs, fav);
-  const meet = lostCleanH2H(rs, fav);
-  const tripBlocks = tripBlocksPick(trip);
+  const trip = (typeof topComparableAvg3Sole === 'function') ? topComparableAvg3Sole(rs, fav) : null;
+  const meet = (typeof lostCleanH2H === 'function') ? lostCleanH2H(rs, fav) : null;
   const base = {h: fav, eps: favEps, ranked: usableEl ? usableEl.ranked : [], fav,
                 avg3: avg3Of(fav), abilityOK: ability.ok, abilityWhy: ability.why,
                 trip, meet};
 
-  // v1.85: trip-matched figures and H2H are SOFT when overall sole Avg-3 holds.
-  // Hard-blocking here was producing PASS-9 cards while the measured gate (fav +
-  // sole top last-3 mean) was clear — Decision 0 with no ticket path.
-  // Trip / H2H still appear as concerns on the card; they no longer veto BET.
-  if (ability.ok && tripBlocks){
-    // soft only — fall through to Pick; STRONG still blocked later if desired
-  }
-  if (ability.ok && meet && !meet.ok){
-    // soft only for hard H2H — same reason as trip
-  }
   if (ability.ok){
-    // CD 10 Sep 2026 Race 1: QUESTIONABLE still printed a Pick (Maddy Mania,
-    // first tag, one start, beaten 11L) who ran third. Two or more measured
-    // concerns is a stand-down, not a softer colour on the same name.
-    const conf = confidenceOf(rs, fav);
-    // v1.84: two concerns used to kill every borderline Pick. Keep naming them on the
-    // card; only three or more measured concerns stand the Pick down entirely.
-    if (conf.concerns && conf.concerns.length >= 3){
-      return {none: `<b>${escHtml(fav.horse)}</b> is the market's choice and tops recent figures, but the form carries ${conf.concerns.length} measured concerns (${conf.concerns.join('; ')}). No pick.`};
-    }
     const second = usableEl && favEps != null ? usableEl.ranked.find(r => r.eps < favEps) : null;
     return Object.assign({line: 'primary', tier: 1, second, nearTie: false}, base);
   }
 
-  return {none: `<b>${escHtml(fav.horse)}</b> is the market's choice, but ${ability.why}. No pick.`};
+  return {none: `<b>${escHtml(fav.horse)}</b> is the market's choice, but ${ability.why}. No figure favourite.`};
 }
 
 function overlayFor(rs){
@@ -5488,17 +5473,51 @@ function demoteChipsHTML(fl){
 const V_LABEL = {STRONG: 'BET — STRONG', BET: 'BET', PASS: 'PASS'};
 
 function verdictOf(rs){
-  const live = (typeof liveHorses === 'function')
-    ? liveHorses(rs)
-    : ((rs.horses || []).filter(h => h && !h.scratched && h.decimalOdds != null));
+  // v1.87: Claude/Overlay v3 pattern
+  // 1) figure favourite (pickFor primary OR measured sole ML+Avg-3)
+  // 2) no claim-drop / surface-switch flags → BET or STRONG
+  // 3) with those flags → PASS (figure fav named but not a win ticket)
+  // 4) no figure favourite → PASS (opinion only; no EXOTICS key without win horse)
+  const liveAll = (typeof liveHorses === 'function')
+    ? liveHorses(rs) : ((rs.horses || []).filter(h => h && !h.scratched));
+  const mlOf = h => {
+    if (typeof parseOdds === 'function') {
+      const v = parseOdds(h.mlOddsStr || h.oddsStr || h.odds);
+      if (v != null) return v;
+    }
+    return h.decimalOdds != null ? h.decimalOdds : null;
+  };
+  const live = liveAll.filter(h => mlOf(h) != null);
   const n = live.length;
-  const pick = (typeof pickFor === 'function') ? pickFor(rs) : null;
-  const pickH = (pick && pick.line === 'primary' && pick.h) ? pick.h
-    : (pick && !pick.none && pick.h) ? pick.h : null;
   const surfaceMoved = (typeof raceSurfaceChanged === 'function') && raceSurfaceChanged(rs);
   const maidenCaution = (typeof raceIsOpenMdClaimer === 'function') && raceIsOpenMdClaimer(rs);
 
-  const avgOf = h => (h.avgSpd3 != null ? h.avgSpd3 : (typeof avg3Of === 'function' ? avg3Of(h) : null));
+  // Prefer pickFor primary (now Overlay-simple)
+  const p = (typeof pickFor === 'function') ? pickFor(rs) : null;
+  let pickH = (p && p.line === 'primary' && p.h) ? p.h : null;
+  let noneWhy = (p && p.none) ? String(p.none).replace(/<[^>]+>/g, '') : '';
+
+  // Fallback measured gate if pickFor still null for non-ability reasons
+  if (!pickH && n >= 2){
+    const priced = live.slice().sort((a,b) => mlOf(a) - mlOf(b));
+    const fav = priced[0];
+    const soleFav = priced.length < 2 || mlOf(priced[0]) !== mlOf(priced[1]);
+    const rated = live
+      .map(h => ({h, v: (typeof avg3Of === 'function') ? avg3Of(h) : h.avgSpd3}))
+      .filter(x => x.v != null && !isNaN(x.v))
+      .sort((a,b) => b.v - a.v);
+    if (soleFav && rated.length >= 3 && rated[0].v !== rated[1].v && rated[0].h === fav){
+      pickH = fav;
+      noneWhy = '';
+    } else if (!noneWhy){
+      if (!soleFav) noneWhy = 'No sole morning-line favourite.';
+      else if (rated.length < 3) noneWhy = 'Fewer than three runners carry two recent figures.';
+      else if (rated.length >= 2 && rated[0].v === rated[1].v) noneWhy = 'Top last-3 figure average is tied.';
+      else if (rated.length && rated[0].h !== fav)
+        noneWhy = 'Favourite is not sole top on last-3 figures (leader: ' + (rated[0].h.horse || '') + ').';
+    }
+  }
+
   const figScore = (h) => {
     if (!h) return 0;
     let s = 0;
@@ -5507,52 +5526,69 @@ function verdictOf(rs){
       const i = vals.findIndex(x => x.h === h);
       return i < 0 ? 99 : i + 1;
     };
+    const avgOf = h => (typeof avg3Of === 'function') ? avg3Of(h) : h.avgSpd3;
     const ar = rank(avgOf), pr = rank(x => x.rawPP), lr = rank(x => x.lastSpd);
     if (ar === 1) s += 4; else if (ar === 2) s += 2; else if (ar === 3) s += 1;
     if (pr === 1) s += 3; else if (pr === 2) s += 1;
     if (lr === 1) s += 2; else if (lr === 2) s += 1;
-    if (typeof demotionFlags === 'function') s -= demotionFlags(h, live).length * 2;
     return s;
   };
-  // Exacta under ONLY when we have a win horse (the Pick)
   const underOf = (h, k) => {
     const rest = live.filter(x => x !== h).slice();
-    rest.sort((a,b) => figScore(b) - figScore(a) || (a.decimalOdds||99) - (b.decimalOdds||99));
+    rest.sort((a,b) => figScore(b) - figScore(a) || mlOf(a) - mlOf(b));
     return rest.slice(0, k);
   };
+  const coreOf = (h) => {
+    const items = ['Avg-3'];
+    const pp = live.filter(x => x.rawPP != null).slice().sort((a,b) => (b.rawPP||0)-(a.rawPP||0));
+    if (pp.length && (pp.length < 2 || pp[0].rawPP !== pp[1].rawPP) && pp[0] === h) items.push('Prime Power');
+    const ls = live.filter(x => x.lastSpd != null).slice().sort((a,b) => b.lastSpd - a.lastSpd);
+    if (ls.length && (ls.length < 2 || ls[0].lastSpd !== ls[1].lastSpd) && ls[0] === h) items.push('Last Speed');
+    return {count: items.length, items, full: items.length >= 3};
+  };
+
+  // Claude flags that demote figure fav to PASS (claim drop / surface switch)
+  const flagWhy = [];
+  if (pickH && typeof claimDropFacts === 'function'){
+    const cd = claimDropFacts(pickH);
+    if (cd) flagWhy.push('claiming-price slide/drop');
+  }
+  if (pickH && typeof surfaceSwitchFacts === 'function'){
+    const sw = surfaceSwitchFacts(pickH);
+    if (sw) flagWhy.push('surface switch (' + (sw.from||'?') + ' → ' + (sw.to||'?') + ')');
+  }
+
+  if (pickH && flagWhy.length){
+    return {
+      tier: 'PASS', h: null, under: [], opinion: pickH,
+      why: 'Figure favourite ' + (pickH.horse||'') + ' is flagged (' + flagWhy.join('; ')
+        + ') — no win ticket. Opinion only.'
+    };
+  }
 
   if (pickH){
-    const core = (typeof measuredCore === 'function') ? measuredCore(rs, pickH) : {count:0, items:[], full:false};
-    const flags = (typeof demotionFlags === 'function') ? demotionFlags(pickH, live) : [];
-    const isStrong = !!(core.full && !surfaceMoved && !maidenCaution && flags.length === 0);
+    const core = coreOf(pickH);
+    const isStrong = !!(core.full && !surfaceMoved && !maidenCaution);
     if (isStrong){
       return {
         tier: 'STRONG', h: pickH, under: underOf(pickH, 3), core,
-        why: 'Win bet. Pick + CORE 3/3 (' + (core.items.join(' + ') || '—') + '), clean surface, not maiden/claimer.'
+        why: 'Win bet. Figure favourite + CORE 3/3 (' + core.items.join(' + ') + ').'
       };
     }
-    let why = 'Win bet. Pick (favourite + sole top Avg-3). CORE ' + core.count + '/3';
-    if (core.items && core.items.length) why += ' (' + core.items.join(' + ') + ')';
-    if (maidenCaution) why += ' · open maiden/claimer — smaller than a normal win bet';
-    if (surfaceMoved) why += ' · surface changed — STRONG blocked';
-    if (flags.length) why += ' · demotion: ' + flags.map(f => f.code).join(', ');
+    let why = 'Win bet. Figure favourite (sole ML fav + sole top last-3 Avg-3). CORE ' + core.count + '/3';
+    if (core.items.length) why += ' (' + core.items.join(' + ') + ')';
+    if (maidenCaution) why += ' · maiden/claimer — not STRONG';
+    if (surfaceMoved) why += ' · surface changed — not STRONG';
     return {tier: 'BET', h: pickH, under: underOf(pickH, 2), core, why};
   }
 
-  // No Pick → PASS only. Rank opinion for eyes, never a ticket key.
-  const noneWhy = (pick && pick.none) ? String(pick.none).replace(/<[^>]+>/g, '') : '';
-  const split = (typeof contenderSplit === 'function')
-    ? contenderSplit({race: rs.race, horses: live, byMarket: (rs.byMarket || live).slice()}) : null;
-  const conts = (split && split.contenders || []).map(x => x.h).filter(Boolean);
-  const pool = conts.length ? conts : live;
-  const ranked = pool.slice().sort((a,b) => figScore(b) - figScore(a) || (a.decimalOdds||99) - (b.decimalOdds||99));
+  const ranked = live.slice().sort((a,b) => figScore(b) - figScore(a) || (mlOf(a)||99) - (mlOf(b)||99));
   const opinion = ranked[0] || null;
-  let why = 'No win bet — Pick gate did not fire.';
-  if (noneWhy) why += ' ' + noneWhy;
-  else if (n >= 9) why += ' Wide field (' + n + ').';
-  if (opinion) why += ' Ranking opinion only: #' + (opinion.post || '?') + ' ' + (opinion.horse || '') + ' leads Contenders on figures — not a ticket key.';
-  return {tier: 'PASS', h: null, under: [], opinion: opinion, why};
+  let why = 'No win bet — ' + (noneWhy || 'no figure favourite.');
+  if (opinion) why += ' Opinion: #' + (opinion.post||'?') + ' ' + (opinion.horse||'') + ' — not a ticket key.';
+  return {tier: 'PASS', h: null, under: [], opinion, why};
 }
+
 
 function verdictTicket(v){
   if (!v) return '';
@@ -6258,7 +6294,15 @@ function renderPicks(raceSummaries){
   const standoutRace = one.chosen ? one.chosen.rs.race : null;
   const namedPairs = (raceSummaries || []).flatMap(rs =>
     decisionLinesNamed(rs, standoutRace).map(l => ({rs, l})));
-  const n = namedPairs.length;
+  // v1.86: Decision count = BET/STRONG verdicts (measured gate), not only pickFor lines
+  let n = namedPairs.length;
+  if (typeof verdictOf === 'function'){
+    const betN = (raceSummaries || []).filter(rs => {
+      const v = verdictOf(rs);
+      return v && (v.tier === 'BET' || v.tier === 'STRONG');
+    }).length;
+    if (betN > n) n = betN;
+  }
   document.getElementById('pickCount').textContent = String(n);
   // v1.81 card-level verdict board
   window.__lastVerdictBoard = (typeof buildVerdictBoardHTML === 'function')
@@ -6277,7 +6321,7 @@ function renderPicks(raceSummaries){
   if (!n){
     head = `<div class="decision-pass" style="margin:0 0 16px;padding:14px 16px;">
       <span class="pick-tier t-pass">NO DECISIONS</span>
-      No Pick or Overlay on this card. Form-concern favourites and plain contenders stay on Contenders as ALSO — not Decisions.
+      No measured win bets on this card (sole ML favourite + sole top last-3 figures). See Today’s verdicts above for PASS reasons.
     </div>`;
   } else {
     const cards = namedPairs.map(({rs, l}) => {
@@ -6829,7 +6873,7 @@ function renderPrintView(){
 
 renderRows();
 </script>
-  <div style="text-align:center; padding:14px 0 24px; font-family:var(--mono); font-size:10px; color:var(--paper-line); opacity:.7;">Horse Race Review v1.85 · released 9 October 2026 · build 2026-10-09-pick-fires</div>
+  <div style="text-align:center; padding:14px 0 24px; font-family:var(--mono); font-size:10px; color:var(--paper-line); opacity:.7;">Horse Race Review v1.87 · released 9 October 2026 · build 2026-10-09-claude-align</div>
 
 <div id="errBar" class="no-print">
   <div id="errBarMsg"></div>
