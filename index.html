@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Horse Race Review v1.87 — Race Card Reader</title>
+<title>Horse Race Review v1.88 — Race Card Reader</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   :root{
@@ -1078,7 +1078,7 @@
 <body>
 <div class="wrap">
   <header>
-    <p class="eyebrow">Handicapping utility · <span class="ver">v1.87</span> · released 9 October 2026</p>
+    <p class="eyebrow">Handicapping utility · <span class="ver">v1.88</span> · released 9 October 2026</p>
     <h1><span class="flap">H</span><span class="flap">o</span><span class="flap">r</span><span class="flap">s</span><span class="flap">e</span> <span class="flap">R</span><span class="flap">a</span><span class="flap">c</span><span class="flap">e</span> <span class="flap">R</span><span class="flap">e</span><span class="flap">v</span><span class="flap">i</span><span class="flap">e</span><span class="flap">w</span></h1>
     <p class="tagline">Upload a data file or program PDF. Horse Race Review lays out the whole card: past performances with pace, scratches, surface changes, and a decision board ranked BEST → USE → LEAN → ALSO → VALUE → PASS. Measured pool (52 cards / 190 Picks): core≥3 hits 61% at +31% ROI. BEST requires that concurrence; surface changes block BEST; exacta flagged when two model names sit live.</p>
   </header>
@@ -5473,11 +5473,19 @@ function demoteChipsHTML(fl){
 const V_LABEL = {STRONG: 'BET — STRONG', BET: 'BET', PASS: 'PASS'};
 
 function verdictOf(rs){
-  // v1.87: Claude/Overlay v3 pattern
-  // 1) figure favourite (pickFor primary OR measured sole ML+Avg-3)
-  // 2) no claim-drop / surface-switch flags → BET or STRONG
-  // 3) with those flags → PASS (figure fav named but not a win ticket)
-  // 4) no figure favourite → PASS (opinion only; no EXOTICS key without win horse)
+  // v1.88 BETTING LOGIC — measured on overlay_pack_1009 (508 races / 197 Picks)
+  //
+  // 1. Figure favourite = sole ML fav + sole top Avg-3 (surface-aware)
+  // 2. CORE = how many of {Avg-3, sole PP, sole last speed} the fav owns (1–3)
+  // 3. PRICE bands (decimal odds-to-1 / ML):
+  //      < 1.0   (~under even money, $2 win < $4)  → almost never BET
+  //      1.0–2.2 (~1/1 to 6/5)                     → BET only if CORE 3
+  //      >= 2.2  (~6/5+)                           → BET if CORE >= 2
+  //      >= 3.0  (~2/1+)                           → preferred ROI band
+  // 4. CORE 0–1 figure favs hit ~33% / −12% ROI → PASS the win ticket
+  // 5. Exacta only with a win horse on top (no EXOTICS-only keys)
+  // 6. Claim-drop / surface-switch flags → PASS figure fav
+  //
   const liveAll = (typeof liveHorses === 'function')
     ? liveHorses(rs) : ((rs.horses || []).filter(h => h && !h.scratched));
   const mlOf = h => {
@@ -5492,12 +5500,11 @@ function verdictOf(rs){
   const surfaceMoved = (typeof raceSurfaceChanged === 'function') && raceSurfaceChanged(rs);
   const maidenCaution = (typeof raceIsOpenMdClaimer === 'function') && raceIsOpenMdClaimer(rs);
 
-  // Prefer pickFor primary (now Overlay-simple)
+  // --- figure favourite ---
   const p = (typeof pickFor === 'function') ? pickFor(rs) : null;
   let pickH = (p && p.line === 'primary' && p.h) ? p.h : null;
   let noneWhy = (p && p.none) ? String(p.none).replace(/<[^>]+>/g, '') : '';
 
-  // Fallback measured gate if pickFor still null for non-ability reasons
   if (!pickH && n >= 2){
     const priced = live.slice().sort((a,b) => mlOf(a) - mlOf(b));
     const fav = priced[0];
@@ -5538,52 +5545,116 @@ function verdictOf(rs){
     rest.sort((a,b) => figScore(b) - figScore(a) || mlOf(a) - mlOf(b));
     return rest.slice(0, k);
   };
+  // CORE: Recent Form (Avg-3) + Prime Power + Recent Speed (last fig)
   const coreOf = (h) => {
-    const items = ['Avg-3'];
+    const items = ['Recent Form'];
     const pp = live.filter(x => x.rawPP != null).slice().sort((a,b) => (b.rawPP||0)-(a.rawPP||0));
     if (pp.length && (pp.length < 2 || pp[0].rawPP !== pp[1].rawPP) && pp[0] === h) items.push('Prime Power');
     const ls = live.filter(x => x.lastSpd != null).slice().sort((a,b) => b.lastSpd - a.lastSpd);
-    if (ls.length && (ls.length < 2 || ls[0].lastSpd !== ls[1].lastSpd) && ls[0] === h) items.push('Last Speed');
+    if (ls.length && (ls.length < 2 || ls[0].lastSpd !== ls[1].lastSpd) && ls[0] === h) items.push('Recent Speed');
     return {count: items.length, items, full: items.length >= 3};
   };
 
-  // Claude flags that demote figure fav to PASS (claim drop / surface switch)
+  const ranked = live.slice().sort((a,b) => figScore(b) - figScore(a) || (mlOf(a)||99) - (mlOf(b)||99));
+  const opinion = ranked[0] || null;
+
+  // Claude flags
   const flagWhy = [];
   if (pickH && typeof claimDropFacts === 'function'){
-    const cd = claimDropFacts(pickH);
-    if (cd) flagWhy.push('claiming-price slide/drop');
+    try { if (claimDropFacts(pickH)) flagWhy.push('claiming-price slide/drop'); } catch(e){}
   }
   if (pickH && typeof surfaceSwitchFacts === 'function'){
-    const sw = surfaceSwitchFacts(pickH);
-    if (sw) flagWhy.push('surface switch (' + (sw.from||'?') + ' → ' + (sw.to||'?') + ')');
+    try {
+      const sw = surfaceSwitchFacts(pickH);
+      if (sw) flagWhy.push('surface switch (' + (sw.from||'?') + ' → ' + (sw.to||'?') + ')');
+    } catch(e){}
   }
 
   if (pickH && flagWhy.length){
     return {
-      tier: 'PASS', h: null, under: [], opinion: pickH,
-      why: 'Figure favourite ' + (pickH.horse||'') + ' is flagged (' + flagWhy.join('; ')
+      tier: 'PASS', h: null, under: [], opinion: pickH, core: coreOf(pickH),
+      why: 'Figure favourite ' + (pickH.horse||'') + ' flagged (' + flagWhy.join('; ')
         + ') — no win ticket. Opinion only.'
     };
   }
 
   if (pickH){
     const core = coreOf(pickH);
-    const isStrong = !!(core.full && !surfaceMoved && !maidenCaution);
-    if (isStrong){
+    // Prefer final odds if entered, else ML
+    let price = null;
+    if (pickH.finalOddsStr && typeof parseOdds === 'function'){
+      const f = parseOdds(pickH.finalOddsStr);
+      if (f != null) price = f;
+    }
+    if (price == null) price = mlOf(pickH);
+
+    // --- PRICE + CORE betting matrix (pack-backed) ---
+    // CORE 0–1: always PASS win ticket (~33% / −12% ROI)
+    if (core.count <= 1){
       return {
-        tier: 'STRONG', h: pickH, under: underOf(pickH, 3), core,
-        why: 'Win bet. Figure favourite + CORE 3/3 (' + core.items.join(' + ') + ').'
+        tier: 'PASS', h: null, under: [], opinion: pickH, core,
+        why: 'Figure favourite ' + (pickH.horse||'') + ' but CORE '
+          + core.count + '/3 only (' + core.items.join(' + ')
+          + ') — pack hit ~33% / negative ROI. No win ticket.'
       };
     }
-    let why = 'Win bet. Figure favourite (sole ML fav + sole top last-3 Avg-3). CORE ' + core.count + '/3';
-    if (core.items.length) why += ' (' + core.items.join(' + ') + ')';
+
+    // Deep chalk < 1/1: high hit, negative ROI unless we still show STRONG name
+    if (price != null && price < 1.0){
+      // CORE 3 can still be labeled STRONG *name* but we PASS the ticket at this price
+      return {
+        tier: 'PASS', h: null, under: [], opinion: pickH, core,
+        why: 'Figure favourite ' + (pickH.horse||'') + ' CORE ' + core.count
+          + '/3 at short price (' + price.toFixed(2)
+          + ' — under even money). Pack: ~60% hit but negative ROI. No win ticket.'
+      };
+    }
+
+    // Thin price 1.0–2.2: only CORE 3 clears a BET
+    if (price != null && price < 2.2){
+      if (core.count < 3){
+        return {
+          tier: 'PASS', h: null, under: [], opinion: pickH, core,
+          why: 'Figure favourite ' + (pickH.horse||'') + ' CORE ' + core.count
+            + '/3 at thin price (' + price.toFixed(2)
+            + '). Need CORE 3/3 or ~6/5+. No win ticket.'
+        };
+      }
+      // CORE 3 at thin but not under even money → BET (not STRONG if maiden/surface)
+      if (surfaceMoved || maidenCaution){
+        return {
+          tier: 'BET', h: pickH, under: underOf(pickH, 2), core,
+          why: 'Win bet. CORE 3/3 figure favourite at thin price ('
+            + price.toFixed(2) + ').'
+            + (maidenCaution ? ' Maiden/claimer — not STRONG.' : '')
+            + (surfaceMoved ? ' Surface changed — not STRONG.' : '')
+        };
+      }
+      return {
+        tier: 'STRONG', h: pickH, under: underOf(pickH, 3), core,
+        why: 'Win bet — STRONG. CORE 3/3 at usable thin price (' + price.toFixed(2) + ').'
+      };
+    }
+
+    // Fair price >= 2.2 (~6/5+): CORE >= 2 → BET; CORE 3 + clean → STRONG
+    if (core.full && !surfaceMoved && !maidenCaution){
+      return {
+        tier: 'STRONG', h: pickH, under: underOf(pickH, 3), core,
+        why: 'Win bet — STRONG. CORE 3/3 (' + core.items.join(' + ')
+          + ') at fair price (' + (price != null ? price.toFixed(2) : 'n/a') + ').'
+      };
+    }
+    let why = 'Win bet. Figure favourite CORE ' + core.count + '/3 ('
+      + core.items.join(' + ') + ')';
+    if (price != null) why += ' · price ' + price.toFixed(2);
+    if (price != null && price >= 3.0) why += ' · preferred 2/1+ ROI band';
     if (maidenCaution) why += ' · maiden/claimer — not STRONG';
     if (surfaceMoved) why += ' · surface changed — not STRONG';
+    if (!core.full) why += ' · CORE short of 3/3 — not STRONG';
     return {tier: 'BET', h: pickH, under: underOf(pickH, 2), core, why};
   }
 
-  const ranked = live.slice().sort((a,b) => figScore(b) - figScore(a) || (mlOf(a)||99) - (mlOf(b)||99));
-  const opinion = ranked[0] || null;
+  // No figure favourite
   let why = 'No win bet — ' + (noneWhy || 'no figure favourite.');
   if (opinion) why += ' Opinion: #' + (opinion.post||'?') + ' ' + (opinion.horse||'') + ' — not a ticket key.';
   return {tier: 'PASS', h: null, under: [], opinion, why};
@@ -5656,7 +5727,7 @@ function buildVerdictBoardHTML(raceSummaries){
         '<span class="vb-c vb-' + t.toLowerCase() + '">' + (V_LABEL[t] || t) + ' ' + counts[i] + '</span>'
       ).join('') + '</div>'
     + rows.map(line).join('')
-    + '<div class="vb-why" style="margin-top:10px"><b>Rule:</b> exacta only with a win horse on top. PASS = no win, no exacta key — ranking is eyes only.</div></div>';
+    + '<div class="vb-why" style="margin-top:10px"><b>Rule:</b> BET needs CORE ≥ 2 + price ≳ 6/5. Exacta only with win horse on top. PASS = no ticket.</div></div>';
 }
 
 
@@ -6873,7 +6944,7 @@ function renderPrintView(){
 
 renderRows();
 </script>
-  <div style="text-align:center; padding:14px 0 24px; font-family:var(--mono); font-size:10px; color:var(--paper-line); opacity:.7;">Horse Race Review v1.87 · released 9 October 2026 · build 2026-10-09-claude-align</div>
+  <div style="text-align:center; padding:14px 0 24px; font-family:var(--mono); font-size:10px; color:var(--paper-line); opacity:.7;">Horse Race Review v1.88 · released 9 October 2026 · build 2026-10-09-bet-logic</div>
 
 <div id="errBar" class="no-print">
   <div id="errBarMsg"></div>
