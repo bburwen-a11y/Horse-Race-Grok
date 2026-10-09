@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Horse Race Review v1.81 — Race Card Reader</title>
+<title>Horse Race Review v1.82 — Race Card Reader</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   :root{
@@ -1078,7 +1078,7 @@
 <body>
 <div class="wrap">
   <header>
-    <p class="eyebrow">Handicapping utility · <span class="ver">v1.81</span> · released 7 October 2026</p>
+    <p class="eyebrow">Handicapping utility · <span class="ver">v1.82</span> · released 7 October 2026</p>
     <h1><span class="flap">H</span><span class="flap">o</span><span class="flap">r</span><span class="flap">s</span><span class="flap">e</span> <span class="flap">R</span><span class="flap">a</span><span class="flap">c</span><span class="flap">e</span> <span class="flap">R</span><span class="flap">e</span><span class="flap">v</span><span class="flap">i</span><span class="flap">e</span><span class="flap">w</span></h1>
     <p class="tagline">Upload a data file or program PDF. Horse Race Review lays out the whole card: past performances with pace, scratches, surface changes, and a decision board ranked BEST → USE → LEAN → ALSO → VALUE → PASS. Measured pool (52 cards / 190 Picks): core≥3 hits 61% at +31% ROI. BEST requires that concurrence; surface changes block BEST; exacta flagged when two model names sit live.</p>
   </header>
@@ -3776,11 +3776,49 @@ function tripBlocksPick(trip){
 // Direct meetings already in the file. A clean loss at today's trip to a
 // horse still in this field is the one piece of past-performance evidence
 // that names who beat whom. A chart-comment trouble line excuses the loss.
+// H2H loss veto (v1.82) — Claude/data review:
+// Old rule vetoed ANY clean in-field loss at a similar trip, no matter how old.
+// That blocked improved horses (e.g. City Blocks long after a prior loss to Nina Kay).
+// New rule — hard Pick veto only when the loss is RECENT and form has NOT moved on:
+//   1. Meeting within H2H_MAX_DAYS (120) of today's card, OR within the horse's last 4 starts
+//   2. Comparable distance (within 2f)
+//   3. No trouble note on the loser that day
+//   4. NOT clearly improved: current Avg-3 must be within 3pts of (or worse than) the
+//      speed figure the horse ran in that losing race (if available)
+// Older / outworked losses stay as Contender tags (H2H LOSS) but do not kill the Pick.
+const H2H_MAX_DAYS = 120;
+const H2H_IMPROVE_PTS = 3;
+
+function parseYmdV182(s){
+  const t = String(s || '').replace(/\D/g, '');
+  if (t.length !== 8) return null;
+  const y = +t.slice(0,4), m = +t.slice(4,6), d = +t.slice(6,8);
+  if (!y || !m || !d) return null;
+  return Date.UTC(y, m - 1, d);
+}
+function cardYmdMs(rs){
+  // Prefer race/card date on any live horse, else first PP "today" field
+  const live = (rs && rs.horses) || [];
+  for (const h of live){
+    const y = h.raceDateYmd || h.todayYmd || null;
+    const ms = parseYmdV182(y);
+    if (ms != null) return ms;
+  }
+  if (typeof cardDateLong === 'function'){
+    // best-effort; cardDateLong is display text — skip if not ymd
+  }
+  return null;
+}
 function lostCleanH2H(rs, h){
   const live = (rs.horses || []).filter(x => !x.scratched);
-  if (!h || live.length < 2) return {ok: true, why: ''};
+  if (!h || live.length < 2) return {ok: true, why: '', soft: null};
   const yds = todayYdsOf(rs);
-  const hits = findMatchups(live).filter(m => {
+  const todayMs = cardYmdMs(rs);
+  const recentStarts = (h.ppRaces || []).slice(0, 4);
+  const recentKeys = new Set(recentStarts.map(p =>
+    String(p.date || '') + '|' + String(p.track || '') + '|' + String(p.raceNum || '')));
+
+  const rawHits = findMatchups(live).filter(m => {
     if (!m.winner || m.loser !== h) return false;
     if (yds != null && m.distYds != null && Math.abs(m.distYds - yds) > 440) return false;
     const pp = m.loser === m.a ? m.pa : m.pb;
@@ -3788,11 +3826,57 @@ function lostCleanH2H(rs, h){
     if (cmt && TROUBLE_WORDS.some(k => cmt.includes(k))) return false;
     return true;
   });
-  if (!hits.length) return {ok: true, why: ''};
-  const m = hits[0];
-  const when = m.date ? String(m.date) : '';
-  return {ok: false, why: `already beaten by ${escHtml(m.winner.horse)} in this field` +
-    (when ? ` (${escHtml(when)})` : '') + ' at a comparable trip, with no trouble note to excuse it'};
+  if (!rawHits.length) return {ok: true, why: '', soft: null};
+
+  // Sort newest first
+  rawHits.sort((a, b) => {
+    const ma = parseYmdV182(a.date) || 0, mb = parseYmdV182(b.date) || 0;
+    return mb - ma;
+  });
+
+  const softNotes = [];
+  for (const m of rawHits){
+    const when = m.date ? String(m.date) : '';
+    const meetMs = parseYmdV182(m.date);
+    const key = String(m.date || '') + '|' + String(m.track || '') + '|' + String(m.raceNum || '');
+    const inLast4 = recentKeys.has(key);
+    let daysAgo = null;
+    if (todayMs != null && meetMs != null) daysAgo = Math.round((todayMs - meetMs) / 86400000);
+
+    const recentEnough = inLast4 || (daysAgo != null && daysAgo >= 0 && daysAgo <= H2H_MAX_DAYS);
+    // Figure from the losing PP line
+    const pp = m.loser === m.a ? m.pa : m.pb;
+    const lossFig = pp && (pp.spd != null ? Number(pp.spd) : null);
+    const curA3 = (typeof avg3Of === 'function') ? avg3Of(h) : (h.avgSpd3 != null ? h.avgSpd3 : null);
+    const improved = (lossFig != null && curA3 != null && curA3 >= lossFig + H2H_IMPROVE_PTS);
+
+    const base = 'already beaten by ' + (m.winner && m.winner.horse ? m.winner.horse : '?') +
+      (when ? ' (' + when + ')' : '') +
+      (daysAgo != null ? ', ' + daysAgo + 'd ago' : '') +
+      ' at a comparable trip';
+
+    if (!recentEnough){
+      softNotes.push(base + ' — old meeting, informational only');
+      continue;
+    }
+    if (improved){
+      softNotes.push(base + ' — but form improved (Avg-3 ' + curA3 + ' vs ' + lossFig + ' that day)');
+      continue;
+    }
+    // HARD VETO — recent, clean, not improved
+    return {
+      ok: false,
+      why: base + ', with no trouble note to excuse it' +
+        (inLast4 ? ' (within last 4 starts)' : ''),
+      soft: null
+    };
+  }
+  // Only soft notes — do not block Pick
+  return {
+    ok: true,
+    why: '',
+    soft: softNotes.length ? softNotes[0] : null
+  };
 }
 
 function pickMeetingsLine(rs, h){
@@ -4159,6 +4243,7 @@ function shotListFor(rs){
     if (fi === 0) tags.push(['fig','TOP FIGS']);
     else if (fi === 1) tags.push(['fig','2ND FIGS']);
     if (meet && !meet.ok){ tags.push(['warn','H2H LOSS']); why.push(String(meet.why).replace(/<[^>]+>/g,'')); }
+    else if (meet && meet.ok && meet.soft){ tags.push(['fig','H2H OLD']); why.push(String(meet.soft).replace(/<[^>]+>/g,'')); }
     if (h.lastFinMargin != null && h.lastFinMargin > 8){
       tags.push(['q','WIDE LAST']);
       if (!why.some(w => /beaten/.test(w))) why.push(`beaten ${h.lastFinMargin}L last comparable`);
@@ -6047,7 +6132,12 @@ function concurrenceBlockHTML(rs){
       agree = `<div class="cc-agree cc-none"><b>1/3</b> — neither Prime Power nor last speed solely names the Pick.</div>`;
     }
   } else {
-    agree = `<div class="cc-agree cc-none"><b>No Pick</b> — concurrence does not fire without a primary Pick.</div>`;
+    // Surface the real veto so Decision/Contenders match (v1.82)
+    const whyRaw = (pick && pick.none) ? String(pick.none).replace(/<[^>]+>/g, '') : '';
+    const whyLine = whyRaw
+      ? `<div class="cc-agree cc-none"><b>No Pick</b> — ${escHtml(whyRaw)}</div>`
+      : `<div class="cc-agree cc-none"><b>No Pick</b> — concurrence does not fire without a primary Pick.</div>`;
+    agree = whyLine;
   }
   const core = (pickH && typeof measuredCore === 'function') ? measuredCore(rs, pickH) : null;
   const coreLine = core
@@ -6690,7 +6780,7 @@ function renderPrintView(){
 
 renderRows();
 </script>
-  <div style="text-align:center; padding:14px 0 24px; font-family:var(--mono); font-size:10px; color:var(--paper-line); opacity:.7;">Horse Race Review v1.81 · released 7 October 2026 · build 2026-10-07-verdict</div>
+  <div style="text-align:center; padding:14px 0 24px; font-family:var(--mono); font-size:10px; color:var(--paper-line); opacity:.7;">Horse Race Review v1.82 · released 7 October 2026 · build 2026-10-09-h2h-aware</div>
 
 <div id="errBar" class="no-print">
   <div id="errBarMsg"></div>
