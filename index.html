@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Horse Race Review v1.83 — Race Card Reader</title>
+<title>Horse Race Review v1.84 — Race Card Reader</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   :root{
@@ -1078,7 +1078,7 @@
 <body>
 <div class="wrap">
   <header>
-    <p class="eyebrow">Handicapping utility · <span class="ver">v1.83</span> · released 9 October 2026</p>
+    <p class="eyebrow">Handicapping utility · <span class="ver">v1.84</span> · released 9 October 2026</p>
     <h1><span class="flap">H</span><span class="flap">o</span><span class="flap">r</span><span class="flap">s</span><span class="flap">e</span> <span class="flap">R</span><span class="flap">a</span><span class="flap">c</span><span class="flap">e</span> <span class="flap">R</span><span class="flap">e</span><span class="flap">v</span><span class="flap">i</span><span class="flap">e</span><span class="flap">w</span></h1>
     <p class="tagline">Upload a data file or program PDF. Horse Race Review lays out the whole card: past performances with pace, scratches, surface changes, and a decision board ranked BEST → USE → LEAN → ALSO → VALUE → PASS. Measured pool (52 cards / 190 Picks): core≥3 hits 61% at +31% ROI. BEST requires that concurrence; surface changes block BEST; exacta flagged when two model names sit live.</p>
   </header>
@@ -3574,12 +3574,15 @@ function pickFor(rs){
   // GP 11 Sep 2026 Race 2 (off-turf maiden, five live, thin PP) is the case:
   // the colour already said stand down; the Pick rule used to ignore it.
   const gate = raceReadGate(rs);
-  if (gate && gate.level !== 'read'){
-    return {none: `Race ${escHtml(rs.race)} is marked ${gate.level === 'thin' ? 'THIN' : 'BLIND'} — ${escHtml((gate.why||[]).join('; ') || 'the record is not thick enough')}. No pick.`};
+  // v1.84: THIN (yellow) no longer blocks Pick; only BLIND/none does
+  if (gate && gate.level === 'none'){
+    return {none: `Race ${escHtml(rs.race)} is marked BLIND — ${escHtml((gate.why||[]).join('; ') || 'the record is not thick enough')}. No pick.`};
   }
   const read = readability(rs);
-  if (read && read.level !== 'green'){
-    return {none: `Race ${escHtml(rs.race)} is marked ${READ_LABEL[read.level] || read.level} (${read.pts} of ${read.max}) — ${escHtml(read.why)}. No pick from a thin or blind record.`};
+  // v1.84: only BLIND/red kills the Pick. Yellow/thin is a smaller BET, not a stand-down
+  // (10/9 card: green races still need a path; yellow was wiping whole cards).
+  if (read && read.level === 'red'){
+    return {none: `Race ${escHtml(rs.race)} is marked ${READ_LABEL[read.level] || read.level} (${read.pts} of ${read.max}) — ${escHtml(read.why)}. No pick from a blind record.`};
   }
   // Select on the MORNING LINE. byMarket re-sorts on whichever odds column is
   // active, so selecting from it would silently switch the pick to the final
@@ -3634,8 +3637,10 @@ function pickFor(rs){
     // first tag, one start, beaten 11L) who ran third. Two or more measured
     // concerns is a stand-down, not a softer colour on the same name.
     const conf = confidenceOf(rs, fav);
-    if (conf.level === 'questionable'){
-      return {none: `<b>${escHtml(fav.horse)}</b> is the market's choice and tops recent figures, but the form carries two measured concerns (${conf.concerns.join('; ')}). No pick.`};
+    // v1.84: two concerns used to kill every borderline Pick. Keep naming them on the
+    // card; only three or more measured concerns stand the Pick down entirely.
+    if (conf.concerns && conf.concerns.length >= 3){
+      return {none: `<b>${escHtml(fav.horse)}</b> is the market's choice and tops recent figures, but the form carries ${conf.concerns.length} measured concerns (${conf.concerns.join('; ')}). No pick.`};
     }
     const second = usableEl && favEps != null ? usableEl.ranked.find(r => r.eps < favEps) : null;
     return Object.assign({line: 'primary', tier: 1, second, nearTie: false}, base);
@@ -5594,7 +5599,10 @@ function buildVerdictBoardHTML(raceSummaries){
       mid = '<span class="vb-horse">#' + escHtml(v.h.post || '?') + ' ' + escHtml(v.h.horse) + ' (' + escHtml(v.h.oddsStr || '') + ')</span>'
         + '<span class="vb-ticket">' + escHtml(verdictTicket(v)) + '</span>';
     } else if (v.opinion){
-      mid = '<span class="vb-why">Opinion: #' + escHtml(v.opinion.post || '?') + ' ' + escHtml(v.opinion.horse) + ' · no ticket</span>';
+      const shortWhy = (v.why || '').replace(/^No win bet[^.]*(?:\.\s*)?/, '').slice(0, 120);
+      mid = '<span class="vb-why">Opinion: #' + escHtml(v.opinion.post || '?') + ' ' + escHtml(v.opinion.horse)
+        + ' · no ticket'
+        + (shortWhy ? (' — ' + escHtml(shortWhy)) : '') + '</span>';
     } else {
       mid = '<span class="vb-why">' + escHtml(v.why) + '</span>';
     }
@@ -6817,7 +6825,7 @@ function renderPrintView(){
 
 renderRows();
 </script>
-  <div style="text-align:center; padding:14px 0 24px; font-family:var(--mono); font-size:10px; color:var(--paper-line); opacity:.7;">Horse Race Review v1.83 · released 9 October 2026 · build 2026-10-09</div>
+  <div style="text-align:center; padding:14px 0 24px; font-family:var(--mono); font-size:10px; color:var(--paper-line); opacity:.7;">Horse Race Review v1.84 · released 9 October 2026 · build 2026-10-09-gates</div>
 
 <div id="errBar" class="no-print">
   <div id="errBarMsg"></div>
