@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Horse Race Review v1.82 — Race Card Reader</title>
+<title>Horse Race Review v1.83 — Race Card Reader</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   :root{
@@ -1078,7 +1078,7 @@
 <body>
 <div class="wrap">
   <header>
-    <p class="eyebrow">Handicapping utility · <span class="ver">v1.82</span> · released 7 October 2026</p>
+    <p class="eyebrow">Handicapping utility · <span class="ver">v1.83</span> · released 7 October 2026</p>
     <h1><span class="flap">H</span><span class="flap">o</span><span class="flap">r</span><span class="flap">s</span><span class="flap">e</span> <span class="flap">R</span><span class="flap">a</span><span class="flap">c</span><span class="flap">e</span> <span class="flap">R</span><span class="flap">e</span><span class="flap">v</span><span class="flap">i</span><span class="flap">e</span><span class="flap">w</span></h1>
     <p class="tagline">Upload a data file or program PDF. Horse Race Review lays out the whole card: past performances with pace, scratches, surface changes, and a decision board ranked BEST → USE → LEAN → ALSO → VALUE → PASS. Measured pool (52 cards / 190 Picks): core≥3 hits 61% at +31% ROI. BEST requires that concurrence; surface changes block BEST; exacta flagged when two model names sit live.</p>
   </header>
@@ -5470,8 +5470,13 @@ function demoteChipsHTML(fl){
 }
 
 
-// ---- VERDICT (v1.81) — Overlay v2.91 shape, measured Review rules ----
-const V_LABEL = {STRONG: 'BET — STRONG', BET: 'BET', EXOTICS: 'EXOTICS', PASS: 'PASS'};
+
+// ---- VERDICT (v1.83) — coherent tickets only ----
+// Rule: never put a horse on top of an exacta unless we will also back it to win.
+//   STRONG / BET  → win on the Pick; exacta only WITH the Pick on top
+//   PASS          → no win bet, no exacta key; optional ranking opinion only
+// EXOTICS-as-"key a non-Pick" is removed (it contradicted the win stand-down).
+const V_LABEL = {STRONG: 'BET — STRONG', BET: 'BET', PASS: 'PASS'};
 
 function verdictOf(rs){
   const live = (typeof liveHorses === 'function')
@@ -5479,9 +5484,11 @@ function verdictOf(rs){
     : ((rs.horses || []).filter(h => h && !h.scratched && h.decimalOdds != null));
   const n = live.length;
   const pick = (typeof pickFor === 'function') ? pickFor(rs) : null;
-  const pickH = (pick && pick.line === 'primary' && pick.h) ? pick.h : null;
+  const pickH = (pick && pick.line === 'primary' && pick.h) ? pick.h
+    : (pick && !pick.none && pick.h) ? pick.h : null;
   const surfaceMoved = (typeof raceSurfaceChanged === 'function') && raceSurfaceChanged(rs);
   const maidenCaution = (typeof raceIsOpenMdClaimer === 'function') && raceIsOpenMdClaimer(rs);
+
   const avgOf = h => (h.avgSpd3 != null ? h.avgSpd3 : (typeof avg3Of === 'function' ? avg3Of(h) : null));
   const figScore = (h) => {
     if (!h) return 0;
@@ -5498,83 +5505,113 @@ function verdictOf(rs){
     if (typeof demotionFlags === 'function') s -= demotionFlags(h, live).length * 2;
     return s;
   };
+  // Exacta under ONLY when we have a win horse (the Pick)
   const underOf = (h, k) => {
     const rest = live.filter(x => x !== h).slice();
     rest.sort((a,b) => figScore(b) - figScore(a) || (a.decimalOdds||99) - (b.decimalOdds||99));
     return rest.slice(0, k);
   };
+
   if (pickH){
     const core = (typeof measuredCore === 'function') ? measuredCore(rs, pickH) : {count:0, items:[], full:false};
     const flags = (typeof demotionFlags === 'function') ? demotionFlags(pickH, live) : [];
     const isStrong = !!(core.full && !surfaceMoved && !maidenCaution && flags.length === 0);
     if (isStrong){
-      return {tier:'STRONG', h:pickH, under:underOf(pickH,4), core,
-        why:'Pick + CORE 3/3 ('+(core.items.join(' + ')||'—')+') · clean surface · not maiden/claimer. Historic lock slice.'};
+      return {
+        tier: 'STRONG', h: pickH, under: underOf(pickH, 3), core,
+        why: 'Win bet. Pick + CORE 3/3 (' + (core.items.join(' + ') || '—') + '), clean surface, not maiden/claimer.'
+      };
     }
-    let why = 'Pick (favourite + sole top Avg-3). CORE '+core.count+'/3';
-    if (core.items && core.items.length) why += ' ('+core.items.join(' + ')+')';
-    if (maidenCaution) why += ' · open maiden/claimer — soft USE, not STRONG';
+    let why = 'Win bet. Pick (favourite + sole top Avg-3). CORE ' + core.count + '/3';
+    if (core.items && core.items.length) why += ' (' + core.items.join(' + ') + ')';
+    if (maidenCaution) why += ' · open maiden/claimer — smaller than a normal win bet';
     if (surfaceMoved) why += ' · surface changed — STRONG blocked';
-    if (flags.length) why += ' · demotion: '+flags.map(f=>f.code).join(', ');
-    return {tier:'BET', h:pickH, under:underOf(pickH,3), core, why};
+    if (flags.length) why += ' · demotion: ' + flags.map(f => f.code).join(', ');
+    return {tier: 'BET', h: pickH, under: underOf(pickH, 2), core, why};
   }
+
+  // No Pick → PASS only. Rank opinion for eyes, never a ticket key.
+  const noneWhy = (pick && pick.none) ? String(pick.none).replace(/<[^>]+>/g, '') : '';
   const split = (typeof contenderSplit === 'function')
-    ? contenderSplit({race:rs.race, horses:live, byMarket:(rs.byMarket||live).slice()}) : null;
-  const conts = (split && split.contenders || []).map(x=>x.h).filter(Boolean);
+    ? contenderSplit({race: rs.race, horses: live, byMarket: (rs.byMarket || live).slice()}) : null;
+  const conts = (split && split.contenders || []).map(x => x.h).filter(Boolean);
   const pool = conts.length ? conts : live;
-  const ranked = pool.slice().sort((a,b)=>figScore(b)-figScore(a)||(a.decimalOdds||99)-(b.decimalOdds||99));
-  const top = ranked[0] || null;
-  const topFlags = (top && typeof demotionFlags === 'function') ? demotionFlags(top, live) : [];
-  const clean = !!(top && figScore(top) > 0 && !(topFlags||[]).length);
-  if (top && clean && n <= 8 && !surfaceMoved){
-    return {tier:'EXOTICS', h:top, under:underOf(top,3),
-      why:'No Pick — top Contender on figures with no demotion flag in a field of '+n+'. Exacta structure only; no win bet.'};
-  }
-  let why = 'No Pick';
-  if (n >= 9) why += ' · '+n+' runners';
-  if (surfaceMoved) why += ' · surface changed';
-  if (!top) why += ' · no ranked horse';
-  else if (!clean) why += ' · top ranked ('+(top.horse||'')+') has weak figures or a demotion flag';
-  else why += ' · field not clean enough for an exotics key';
-  return {tier:'PASS', h:null, under:[], why};
+  const ranked = pool.slice().sort((a,b) => figScore(b) - figScore(a) || (a.decimalOdds||99) - (b.decimalOdds||99));
+  const opinion = ranked[0] || null;
+  let why = 'No win bet — Pick gate did not fire.';
+  if (noneWhy) why += ' ' + noneWhy;
+  else if (n >= 9) why += ' Wide field (' + n + ').';
+  if (opinion) why += ' Ranking opinion only: #' + (opinion.post || '?') + ' ' + (opinion.horse || '') + ' leads Contenders on figures — not a ticket key.';
+  return {tier: 'PASS', h: null, under: [], opinion: opinion, why};
 }
+
 function verdictTicket(v){
-  if (!v || !v.h) return '';
-  const num = h => '#'+(h.post||'?');
-  const under = (v.under||[]).map(num).join(', ');
-  if (v.tier==='STRONG') return '$2 win '+num(v.h)+(under?' · $1 exacta '+num(v.h)+' / '+under:'');
-  if (v.tier==='BET') return '$2 win '+num(v.h)+(v.under&&v.under[0]?' · exacta '+num(v.h)+' / '+num(v.under[0]):'');
-  if (v.tier==='EXOTICS') return '$1 exacta '+num(v.h)+(under?' / '+under:'')+' — no win bet';
-  return '';
+  if (!v) return '';
+  const num = h => '#' + (h.post || '?');
+  if (v.tier === 'STRONG' && v.h){
+    const u = (v.under || []).map(num).join(', ');
+    return '$2 win ' + num(v.h) + (u ? ' · $1 exacta ' + num(v.h) + ' / ' + u : '');
+  }
+  if (v.tier === 'BET' && v.h){
+    const second = v.under && v.under[0] ? num(v.under[0]) : '';
+    return '$2 win ' + num(v.h) + (second ? ' · exacta ' + num(v.h) + ' / ' + second : '');
+  }
+  // PASS — no ticket
+  return 'No ticket';
 }
+
 function verdictBannerHTML(rs){
   const v = verdictOf(rs);
-  const nameOf = h => (typeof ppLink === 'function') ? ppLink(rs.race, h.horse, escHtml(h.horse)) : escHtml(h.horse);
-  return '<div class="vd vd-'+v.tier.toLowerCase()+'"><div class="vd-tier">'+V_LABEL[v.tier]+'</div>'
-    +(v.h?('<div class="vd-horse">#'+escHtml(v.h.post||'?')+' '+nameOf(v.h)
-      +' <span style="font-weight:600;font-size:13px;color:var(--ink-soft)">· '+escHtml(v.h.oddsStr||'')+'</span></div>'
-      +'<div class="vd-ticket">'+escHtml(verdictTicket(v))+'</div>'):'')
-    +'<div class="vd-why">'+escHtml(v.why)+'</div></div>';
+  const nameOf = h => (typeof ppLink === 'function')
+    ? ppLink(rs.race, h.horse, escHtml(h.horse))
+    : escHtml(h.horse);
+  let horseBlock = '';
+  if (v.h){
+    horseBlock = '<div class="vd-horse">#' + escHtml(v.h.post || '?') + ' ' + nameOf(v.h)
+      + ' <span style="font-weight:600;font-size:13px;color:var(--ink-soft)">· ' + escHtml(v.h.oddsStr || '') + '</span></div>'
+      + '<div class="vd-ticket">' + escHtml(verdictTicket(v)) + '</div>';
+  } else if (v.opinion){
+    horseBlock = '<div class="vd-horse" style="font-weight:600;color:var(--ink-soft)">Opinion (not a bet): #'
+      + escHtml(v.opinion.post || '?') + ' ' + nameOf(v.opinion) + '</div>'
+      + '<div class="vd-ticket">No ticket</div>';
+  } else {
+    horseBlock = '<div class="vd-ticket">No ticket</div>';
+  }
+  return '<div class="vd vd-' + v.tier.toLowerCase() + '">'
+    + '<div class="vd-tier">' + (V_LABEL[v.tier] || v.tier) + '</div>'
+    + horseBlock
+    + '<div class="vd-why">' + escHtml(v.why) + '</div></div>';
 }
+
 function buildVerdictBoardHTML(raceSummaries){
-  const rows = (raceSummaries||[]).map(rs=>({rs, v:verdictOf(rs)}));
-  const order = ['STRONG','BET','EXOTICS','PASS'];
-  const counts = order.map(t=>rows.filter(r=>r.v.tier===t).length);
+  const rows = (raceSummaries || []).map(rs => ({rs, v: verdictOf(rs)}));
+  const order = ['STRONG', 'BET', 'PASS'];
+  const counts = order.map(t => rows.filter(r => r.v.tier === t).length);
   const line = r => {
-    const v=r.v;
-    return '<div class="vb-row vb-'+v.tier.toLowerCase()+'">'
-      +'<a class="vb-race race-jump" data-goto-pick="'+escAttr(r.rs.race)+'" href="#pick-r'+escAttr(r.rs.race)+'">R'+escHtml(r.rs.race)+'</a>'
-      +'<span class="vb-tier t-'+v.tier.toLowerCase()+'">'+V_LABEL[v.tier]+'</span>'
-      +(v.h?('<span class="vb-horse">#'+escHtml(v.h.post||'?')+' '+escHtml(v.h.horse)+' ('+escHtml(v.h.oddsStr||'')+')</span>'
-        +'<span class="vb-ticket">'+escHtml(verdictTicket(v))+'</span>')
-        :('<span class="vb-why">'+escHtml(v.why)+'</span>'))
-      +'</div>';
+    const v = r.v;
+    let mid = '';
+    if (v.h){
+      mid = '<span class="vb-horse">#' + escHtml(v.h.post || '?') + ' ' + escHtml(v.h.horse) + ' (' + escHtml(v.h.oddsStr || '') + ')</span>'
+        + '<span class="vb-ticket">' + escHtml(verdictTicket(v)) + '</span>';
+    } else if (v.opinion){
+      mid = '<span class="vb-why">Opinion: #' + escHtml(v.opinion.post || '?') + ' ' + escHtml(v.opinion.horse) + ' · no ticket</span>';
+    } else {
+      mid = '<span class="vb-why">' + escHtml(v.why) + '</span>';
+    }
+    return '<div class="vb-row vb-' + v.tier.toLowerCase() + '">'
+      + '<a class="vb-race race-jump" data-goto-pick="' + escAttr(r.rs.race) + '" href="#pick-r' + escAttr(r.rs.race) + '">R' + escHtml(r.rs.race) + '</a>'
+      + '<span class="vb-tier t-' + v.tier.toLowerCase() + '">' + (V_LABEL[v.tier] || v.tier) + '</span>'
+      + mid + '</div>';
   };
   return '<div class="verdict-board"><h3>Today\'s verdicts</h3>'
-    +'<div class="vb-counts">'+order.map((t,i)=>'<span class="vb-c vb-'+t.toLowerCase()+'">'+V_LABEL[t]+' '+counts[i]+'</span>').join('')+'</div>'
-    +rows.map(line).join('')
-    +'<div class="vb-why" style="margin-top:10px">STRONG / BET = win side under the Pick gate. EXOTICS = structure only. PASS = stand down.</div></div>';
+    + '<div class="vb-counts">' + order.map((t,i) =>
+        '<span class="vb-c vb-' + t.toLowerCase() + '">' + (V_LABEL[t] || t) + ' ' + counts[i] + '</span>'
+      ).join('') + '</div>'
+    + rows.map(line).join('')
+    + '<div class="vb-why" style="margin-top:10px"><b>Rule:</b> exacta only with a win horse on top. PASS = no win, no exacta key — ranking is eyes only.</div></div>';
 }
+
+
 
 function topTwoDecisionFor(rs){
   const live = (typeof liveHorses === 'function')
@@ -6780,7 +6817,7 @@ function renderPrintView(){
 
 renderRows();
 </script>
-  <div style="text-align:center; padding:14px 0 24px; font-family:var(--mono); font-size:10px; color:var(--paper-line); opacity:.7;">Horse Race Review v1.82 · released 7 October 2026 · build 2026-10-09-h2h-aware</div>
+  <div style="text-align:center; padding:14px 0 24px; font-family:var(--mono); font-size:10px; color:var(--paper-line); opacity:.7;">Horse Race Review v1.83 · released 7 October 2026 · build 2026-10-09-verdict-logic</div>
 
 <div id="errBar" class="no-print">
   <div id="errBarMsg"></div>
