@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HorseRacing v5.0 — 24 Nov 2026</title>
+<title>HorseRacing v5.1 — 24 Nov 2026</title>
 <!-- crossorigin lets the browser hand us the REAL message if this script
      throws. Without it every failure inside it arrives as a bare
      "Script error." with no file or line, which is what the red bar was
@@ -1378,7 +1378,7 @@ details.hhf>summary::-webkit-details-marker{display:none}details.hhf>summary::be
 <body>
 <div class="wrap">
   <header>
-    <p class="eyebrow">HorseRacing · <span class="ver">v5.0</span> · 24 Nov 2026 · Select Mode</p>
+    <p class="eyebrow">HorseRacing · <span class="ver">v5.1</span> · 24 Nov 2026 · Select Mode</p>
     <h1><span class="flap">H</span><span class="flap">o</span><span class="flap">r</span><span class="flap">s</span><span class="flap">e</span><span class="flap">R</span><span class="flap">a</span><span class="flap">c</span><span class="flap">i</span><span class="flap">n</span><span class="flap">g</span></h1>
     <p class="tagline">Upload a Brisnet data file (.DRF, .csv or .zip). HorseRacing lays out the whole card: past performances, scratches, money moves, and high-confidence plays only.</p>
   </header>
@@ -1488,7 +1488,9 @@ details.hhf>summary::-webkit-details-marker{display:none}details.hhf>summary::be
       <p>In a race with no bet, if the second-best chance is within 10 points of the leader and that horse is the morning-line favourite or AI(2)'s top pick, and has not faded late in most of its last three races, the pick moves to it; the card says so. A pick that faded late in most of its last three races drops one confidence step. The chip "Morning line reliable here" or "not reliable here" says whether the favourite has been worth trusting in races of this kind (turf, allowance and stakes, short-priced favourites and fields with no first-time starters, against claiming races, first-time-starter favourites and long-priced favourites). On a bet, the card also notes a poor record on today's surface and a race graded RED. The one exception is a readiness check: there is no win bet on a horse whose last race finished 7th or worse and that has no win in its last 6 starts. In a low-confidence race, Race facts also adds a second look: the next four horses by chance after the pick, with a tag where one is the morning-line favourite, AI(2)'s top pick or the top earner per start. These notes change no other bet. In Race facts each horse also shows, in bold, the signals it carries: AI(2)'s pick, #1 on ability, #1 on chance, morning-line favourite, top earner per start, and #1 on rank score. A contender that ran within 45 days and worked within 14 days is also labelled FRESH, with the two dates. A horse carrying two or more is shown in solid. These tags change no chance, pick, tier or bet. Race facts also say whether the race shapes up as a two-horse race or is wide open, from how much of the chance the top two horses hold.</p>
       <h3>Where the board makes no win bet</h3>
       <p>There is no win bet in a maiden special weight race or in a wide-open race (the top two horses hold under 43% of the chance), whatever the tier, and none on a horse whose last race finished 7th or worse with no win in its last 6. Race facts says so on those races. The pick and its confidence are still shown.</p>
-      <h3>Select Mode (HorseRacing v5.0)</h3>
+      <h3>Pick quality gates (v5.1)</h3>
+      <p>From v5.1 the board refuses weak win bets at the source, not only in the display filter. A horse is held (no win bet) when any of these fail: the race is unreadable; case tally is too thin (STRONG needs +1, others +2); a strong head-to-head loss against a rival still in the field (non-STRONG); AI(2) ranks a different horse first (non-STRONG, when available); or too many Against items (2+ for SOLID/BET, 3+ for STRONG). Held bets show the reasons so you can see what was blocked.</p>
+      <h3>Select Mode (HorseRacing v5.1)</h3>
       <p>Turn on <b>Select Mode</b> (button on the Decisions tab) when you want the board to speak only when it has a real edge. It keeps only Tier 1–3 win bets and clean Tier 4 bets that are 2-1 or longer on the morning line. Unreadable races and weaker opinions are treated as hard SKIPs. The Decisions count and the green chips then show only the high-confidence plays; everything else is eliminated. This is the setting for maximum win rate and fewer losers.</p>
       <h3>Winner details only</h3>
       <p>The default view shows only what the history has shown to help pick winners. It hides the pace lines, the poor-record-on-today's-surface note, the CORE lines, the second-look list, and the signal tags for rank score and top earner. The FRESH label stays. A line in Race facts names the rank-score leader when it has two or more warning signs (a rank score of 5 or worse, a lead under 3 points, not the morning-line favourite) or is not the pick. The Winner details only button switches everything back on.</p>
@@ -8574,14 +8576,81 @@ function preBetChecks(rs, h){
   let short = false; try { const o = parseOdds(h.mlOddsStr); if (o != null && o < 2.5){ short = true; failed.unshift('morning line ' + h.mlOddsStr + ', under 3-2'); } } catch(e){}
   const out = {failed, hold: short || failed.length >= 2}; rs.__chk[key] = out; return out;
 }
+/* ========== HorseRacing v5.1 pick-quality gates (24 Nov 2026) ==========
+   These rules change which horses become win bets, not just which ones are
+   displayed. Goal: fewer losers by refusing weak cases at the source.
+*/
+function caseTallyOf(rs, h){
+  try { return ((rscsMap(rs).get(h) || {}).tally || 0); } catch(e){ return 0; }
+}
+function strongH2HLoss(rs, h){
+  // True when another horse still in today's field beat this one on a
+  // comparable surface/distance. Used as a hard veto on non-STRONG tiers.
+  try {
+    if (typeof topPickH2HContext === 'function'){
+      const z = topPickH2HContext((rs.horses || []).filter(x => !isScratchedNow(rs, x)), h, rs);
+      return !!(z && z.strong);
+    }
+  } catch(e){}
+  try {
+    if (typeof topPickHasStrongH2HLoss === 'function') return !!topPickHasStrongH2HLoss((rs.horses || []).filter(x => !isScratchedNow(rs, x)), h, rs);
+  } catch(e){}
+  return false;
+}
+function pickQualityFail(rs, h, tier){
+  // Returns a reason list if this horse must not be a win bet, else null.
+  const reasons = [];
+  // 1. Unreadable race — historical #1 win rate ~24%. Kill all win bets.
+  try {
+    const u = raceUnreadable(rs);
+    if (u && u.unreadable) reasons.push('UNREADABLE: ' + (u.why || []).join('; '));
+  } catch(e){}
+
+  // 2. Case tally too thin. STRONG needs +1; everything else needs +2.
+  const tal = caseTallyOf(rs, h);
+  const need = (tier === 'STRONG') ? 1 : 2;
+  if (tal < need) reasons.push('case tally ' + (tal > 0 ? '+' : '') + tal + ' (need ' + (need > 0 ? '+' : '') + need + ')');
+
+  // 3. Strong H2H loss — hard veto except pure STRONG
+  if (tier !== 'STRONG' && strongH2HLoss(rs, h))
+    reasons.push('strong H2H loss vs a rival still in this field');
+
+  // 4. AI(2) disagreement on non-STRONG tiers (when AI(2) is ready)
+  try {
+    if (tier !== 'STRONG' && typeof ai2Ready === 'function' && ai2Ready()){
+      const o2 = ai2ModelPick(rs);
+      if (o2 && o2 !== h) reasons.push('AI(2) ranks #' + (o2.post || '?') + ' ' + o2.horse + ' first');
+    }
+  } catch(e){}
+
+  // 5. Against list: 2+ against items kills SOLID/BET; 3+ kills STRONG
+  try {
+    const A = (forAgainst(rs, h).A || []);
+    if (tier === 'STRONG' && A.length >= 3) reasons.push(A.length + ' against items');
+    if (tier !== 'STRONG' && A.length >= 2) reasons.push(A.length + ' against items');
+  } catch(e){}
+
+  return reasons.length ? reasons : null;
+}
 function racePlan(rs){
   let pl = racePlan0(rs);
-  if (pl && pl.play && !pl.win && !pl.winOnly){ const r = raceUnreadable(rs); if (r.unreadable) return Object.assign({}, pl, {play: false, unreadable: true, why: 'UNREADABLE \u2014 ' + r.why.join('; ') + '. Races like this are too hard to call from the data or the odds.'}); }
+  if (pl && pl.play && !pl.win && !pl.winOnly){ const r = raceUnreadable(rs); if (r.unreadable) return Object.assign({}, pl, {play: false, unreadable: true, why: 'UNREADABLE — ' + r.why.join('; ') + '. Races like this are too hard to call from the data or the odds.'}); }
   rs.__heldTier = null;
-  if (pl && pl.win && pl.v && pl.v.h){ let c = preBetChecks(rs, pl.v.h);
+  if (pl && pl.win && pl.v && pl.v.h){
+    let c = preBetChecks(rs, pl.v.h);
     // v4.89 (Robert bets off the morning line): a conditional bet's "2-1 or higher" is read from the morning line, not post odds
     try { if (['BET', 'VALUE', 'CONC'].includes(pl.v.tier)){ const o = parseOdds(pl.v.h.mlOddsStr); if (o != null && o < 3) c = {failed: ['conditional bet needs a morning line of 2-1 or higher (' + pl.v.h.mlOddsStr + ')'].concat((c && c.failed) || []), hold: true}; } } catch(e){}
-    if (c && c.hold){ rs.__heldTier = {h: pl.v.h, failed: c.failed}; pl = Object.assign({}, pl, {win: null, winOnly: false, v: Object.assign({}, pl.v, {tier: 'HELD', downFrom: null}), checkHeld: {h: pl.v.h, failed: c.failed}}); } }
+
+    // v5.1 HorseRacing: quality gates that refuse weak win bets at the source
+    try {
+      const qf = pickQualityFail(rs, pl.v.h, pl.v.tier);
+      if (qf && qf.length){
+        c = {failed: qf.concat((c && c.failed) || []), hold: true};
+      }
+    } catch(e){}
+
+    if (c && c.hold){ rs.__heldTier = {h: pl.v.h, failed: c.failed}; pl = Object.assign({}, pl, {win: null, winOnly: false, v: Object.assign({}, pl.v, {tier: 'HELD', downFrom: null}), checkHeld: {h: pl.v.h, failed: c.failed}}); }
+  }
   return pl;
 }
 function racePlan0(rs){
@@ -8923,7 +8992,7 @@ function winnerOnly(){ try { return window.__winnerOnly != null ? window.__winne
 function setWinnerOnly(v){ window.__winnerOnly = !!v; try { localStorage.setItem('ob_winner_only', v ? '1' : '0'); } catch(e){}
   try { if (window.__ccRaceSummaries){ try { renderRaceCard(window.__ccRaceSummaries, window.__scratchedCount || 0); } catch(e){ console.error(e); } renderPicks(window.__ccRaceSummaries); if (typeof renderFactsTab === 'function') renderFactsTab(window.__ccRaceSummaries); } } catch(e){ console.error(e); } }
 
-/* ========== SELECT MODE (HorseRacing v5.0 · 24 Nov 2026) ==========
+/* ========== SELECT MODE (HorseRacing v5.1 · 24 Nov 2026) ==========
    Goal: pick winners more often by eliminating losers.
    When ON the board only presents high-confidence win bets
    (Tier 1–3, or a clean Tier 4 at 2-1+). Everything else is
@@ -10926,7 +10995,7 @@ renderRows();
 
 ;window.__obMainLoaded=true;
 </script>
-  <div style="text-align:center; padding:14px 0 24px; font-family:var(--mono); font-size:10px; color:var(--paper-line); opacity:.7;">HorseRacing v5.0 · 24 Nov 2026 · Select Mode · build 2026-11-24</div>
+  <div style="text-align:center; padding:14px 0 24px; font-family:var(--mono); font-size:10px; color:var(--paper-line); opacity:.7;">HorseRacing v5.1 · 24 Nov 2026 · pick gates · build 2026-11-24</div>
 <div id="errBar" class="no-print">
   <div id="errBarMsg"></div>
   <div class="eb-actions">
